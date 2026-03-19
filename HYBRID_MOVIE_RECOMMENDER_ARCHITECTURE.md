@@ -389,3 +389,115 @@ Follow-ups: weighting, de-duplication, filtering watched movies.
 **Q6. If this needs to serve 1M users, what architecture changes?**  
 Answer: offline pipelines, embeddings store, candidate generation + ranking, caching.
 
+---
+
+# Version A (Junior Software Engineer) — what to say + what to draw
+
+## 2-minute pitch (memorize)
+
+Link: this project is a Streamlit-based movie recommendation app powered by a hybrid recommender. At runtime, the user selects a few movies and ratings. The app builds two recommendation signals: content-based similarity between movies using TF-IDF + cosine similarity on a prepared text “body” per movie, and user-based collaborative filtering using a user-item ratings matrix, mean-centering each user, then computing user-user cosine similarity and predicting unseen movies via a weighted average of similar users’ ratings. Finally, I merge candidates from both and compute a hybrid score by averaging the two similarity scores, then return Top-N results. Data comes from MovieLens ratings plus IMDb/TMDB metadata prepared offline in notebooks.
+
+---
+
+## Whiteboard diagrams (draw these 3)
+
+### HLD
+
+User  
+Streamlit UI  
+Recommender Engine  
+clean_content.csv  
+ratings_title.csv  
+Top-N Table  
+
+---
+
+### Online flow
+
+Input ratings  
+Append new user rows  
+C[User-item pivot  
+D[Mean-center  
+E[User-user cosine  
+F[TF-IDF on body  
+G[Movie-movie cosine  
+H[CF scores  
+I[Content scores  
+J[Hybrid avg score  
+I--  
+K[Top-10  
+
+---
+
+### Scaling redesign (system design answer)
+
+UI  
+Rec API  
+KV[(Embeddings/Neighbors Store)  
+Offline ETL/Training  
+KV  
+
+---
+
+## SWE-style “senior follow-ups” + crisp answers
+
+### Q: What’s the bottleneck?
+
+A: computing similarity matrices and rebuilding pivot at runtime. Fix: precompute embeddings/neighbors offline + cache + serve in (O(K)).
+
+---
+
+### Q: How do you handle large click/traffic?
+
+A: Not a web traffic system here; it’s a single Streamlit process. In production, separate UI/API, precompute, cache, and add async pipelines.
+
+---
+
+### Q: How do you ensure you don’t recommend already watched movies?
+
+A: filter out titles present in the user’s rated list before ranking.
+
+---
+
+# Version B (Junior ML/DS-focused) — what to say + what to draw
+
+## 2-minute pitch (memorize)
+
+This is a hybrid recommender combining content-based and user-based collaborative filtering. Content-based uses TF-IDF over a movie “body” text (overview, tagline, keywords, cast/director tokens, genres) and cosine similarity to find similar movies. Collaborative filtering builds a user-item rating matrix, mean-centers each user to remove rating bias, computes user-user cosine similarity, and predicts unseen movie scores using similarity-weighted averages. The hybrid model averages both scores to improve cold-start and diversity. I’d evaluate offline with ranking metrics like precision@k/recall@k/NDCG and online via A/B testing and engagement.
+
+---
+
+## ML-style follow-ups + crisp answers
+
+### Q: Why mean-centering?
+
+A: removes user rating scale bias so similarity reflects relative preferences.
+
+---
+
+### Q: How do you pick similarity threshold (0.1)?
+
+A: it’s a heuristic to reduce noise; tune via validation on held-out interactions.
+
+---
+
+### Q: What about cold start?
+
+A: content-based helps when user has few ratings; for new items, content features enable similarity even without ratings.
+
+---
+
+### Q: How would you improve hybrid weighting?
+
+A: learn weights by optimizing a ranking metric or train a learning-to-rank model using both signals as features.
+
+---
+
+# Your “tomorrow plan” (fast practice)
+
+- Practice Version A pitch 3 times + draw the HLD diagram once.  
+- Practice Version B pitch 3 times + write the weighted average formula once:  
+
+[ \hat r_{u,m}=\frac{\sum_v sim(u,v),r'_{v,m}}{\sum_v sim(u,v)} ]  
+
+- Then answer these 5 questions out loud: What is hybrid? Why TF-IDF? Why cosine? Why mean-centering? How to scale?
