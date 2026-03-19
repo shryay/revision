@@ -596,3 +596,181 @@ cd server
 - **Q: Why is `useFetchTotalClicks` hardcoding date range?**
   - **A:** It’s a simplification. In production, the dashboard would allow date range selection and pass it dynamically.
 
+---
+
+# Part A — 60–90 second pitch (2 min)
+
+## Q1. Explain Linklytics end-to-end in 60–90 seconds.
+
+**Strong answer (say this):**  
+Linklytics is a URL shortener with analytics. The React frontend handles login/register and a dashboard. Backend is a Spring Boot REST API with Spring Security + JWT. Users create short URLs; those are stored in Postgres via JPA as UrlMapping rows, linked to the user. When anyone visits /{shortUrl}, the backend looks up the original URL, increments clickCount, stores a ClickEvent row with timestamp, and returns a redirect. Dashboard calls protected endpoints to list my URLs and to fetch analytics aggregated by date, which the UI renders using Chart.js.
+
+**Follow-ups:**  
+- Why JWT instead of session?  
+- Why store ClickEvent rows instead of only clickCount?  
+
+---
+
+# Part B — Frontend (3–4 min)
+
+## Q2. How do you protect routes in the frontend?
+
+**Strong answer:**  
+I use a PrivateRoute wrapper. It reads the JWT token from Context API (which initializes from localStorage.JWT_TOKEN). If a protected page is accessed without a token, it redirects to /login. For public pages, if token exists it redirects to /dashboard.
+
+**Follow-ups:**  
+- What happens on browser refresh?  
+- Any security risk storing JWT in localStorage?  
+
+---
+
+## Q3. How do frontend API calls work?
+
+**Strong answer:**  
+Axios is configured with a baseURL from VITE_BACKEND_URL. For protected calls, I attach Authorization: Bearer <token>. React Query handles caching/loading/error and transforms responses using select (sorting URLs by createdDate, converting the totalClicks map to an array for charts).
+
+**Follow-ups:**  
+- Why React Query? What problem does it solve?  
+- How would you handle global 401 errors (token expired)?  
+
+---
+
+# Part C — Backend: auth + security (5 min)
+
+## Q4. Walk me through register flow.
+
+**Strong answer:**  
+Frontend calls POST /api/auth/public/register. Backend validates uniqueness for username/email, hashes password with BCrypt, stores a User row with role ROLE_USER, and returns success.
+
+**Follow-ups:**  
+- Why BCrypt?  
+- How do you validate email format / password strength (where would you add it)?  
+
+---
+
+## Q5. Walk me through login and JWT generation.
+
+**Strong answer:**  
+Frontend posts POST /api/auth/public/login with username/password. Spring Security AuthenticationManager authenticates using UserDetailsServiceImpl + BCrypt encoder. On success, JwtUtils.generateToken() creates a signed token with subject=username and a roles claim, and backend returns { token }.
+
+**Follow-ups:**  
+- What claims are in your token and why?  
+- How do you set token expiration and validate expiry?  
+
+---
+
+## Q6. Explain how JWT is validated on protected endpoints.
+
+**Strong answer:**  
+JwtAuthenticationFilter runs for each request. It extracts Bearer token from Authorization header, validates signature/expiry, extracts username, loads user details, and sets SecurityContext. Then @PreAuthorize("hasRole('USER')") checks authorization, and controllers can use Principal to know the current user.
+
+**Follow-ups (senior):**  
+- What if token is valid but user was deleted?  
+- What if someone modifies the roles claim?  
+
+---
+
+## Q7. CORS/CSRF: why is CSRF disabled and what about CORS?
+
+**Strong answer:**  
+CSRF is typically for cookie-based auth. Here we use stateless JWT in Authorization header, so CSRF protection is less relevant and disabled. CORS is configured to allow requests from a single configured frontend origin and to permit OPTIONS.
+
+**Follow-ups:**  
+- If you switch to httpOnly cookies, what changes?  
+
+---
+
+# Part D — Backend: URL flows + analytics (6–7 min)
+
+## Q8. How do you generate a short URL and store it?
+
+**Strong answer:**  
+Endpoint POST /api/urls/shorten is protected. It reads originalUrl, gets the user from Principal, generates an 8-character base62-like random string, stores a UrlMapping entity with originalUrl, shortUrl, createdDate, clickCount=0, and the User relation, then returns UrlMappingDTO.
+
+**Follow-ups (important):**  
+- Collision: how do you prevent two URLs from getting same short code?  
+- What DB constraint would you add?  
+- Would you allow custom alias? How?  
+
+---
+
+## Q9. Explain the redirect flow and click tracking.
+
+**Strong answer:**  
+Public endpoint GET /{shortUrl} looks up the mapping by shortUrl. If found, it increments clickCount, saves it, inserts a new ClickEvent with clickDate=now linked to that mapping, then responds with an HTTP redirect to originalUrl.
+
+**Follow-ups (senior):**  
+- What status code do you use (301 vs 302) and why?  
+- How do you handle invalid/expired short URLs?  
+- How do you avoid the redirect endpoint becoming the bottleneck?  
+
+---
+
+## Q10. How does per-link analytics work?
+
+**Strong answer:**  
+GET /api/urls/analytics/{shortUrl}?startDate&endDate loads click events for that shortUrl in the time range, groups by LocalDate, counts events per day, and returns ClickEventDTO[] where each item is {clickDate, count}.
+
+**Follow-ups:**  
+- Why is startDate parsed as ISO_LOCAL_DATE_TIME here?  
+- What happens if startDate/endDate is invalid?  
+
+---
+
+## Q11. How does “total clicks across all my links” work?
+
+**Strong answer:**  
+GET /api/urls/totalClicks?startDate&endDate finds all UrlMappings for the user, fetches click events in the date range for those mappings, groups by LocalDate and counts. It returns a map of date → click count which frontend converts to chart data.
+
+**Follow-ups (senior):**  
+- This query can be expensive. What indexes do you add?  
+- How would you redesign for millions of click events/day?  
+
+---
+
+# Part E — Database + scaling (3–4 min)
+
+## Q12. Describe your tables and relationships.
+
+**Strong answer:**  
+users stores account info and role. url_mapping stores shortUrl/originalUrl/clickCount/createdDate and has a many-to-one relationship to users. click_event stores clickDate and links many-to-one to url_mapping. One UrlMapping has many ClickEvents.
+
+**Follow-ups:**  
+- What should be unique? (username, email, short_url)  
+- What indexes do you add first and why?  
+
+---
+
+## Q13. How would you scale redirects and analytics?
+
+**Strong answer:**  
+Cache shortUrl→originalUrl in Redis to reduce DB reads. Record click events asynchronously using a queue/stream and batch inserts. Maintain daily aggregated counters (materialized view or separate table) so analytics doesn’t scan raw events. Add rate limiting at edge.
+
+**Follow-ups (senior):**  
+- Exactly-once vs at-least-once click counting: what do you choose?  
+- How do you handle bot traffic?  
+
+---
+
+# Part F — Senior “catch” questions (2–3 min)
+
+## Q14. Your frontend constructs share URLs as /s/{shortUrl}, but backend redirect is /{shortUrl}. Explain.
+
+**Strong answer:**  
+That’s a mismatch that needs alignment. Either the frontend must generate /{shortUrl} links (backend owns redirect), or we add a frontend route /s/:shortUrl that calls backend redirect endpoint or triggers navigation. In production, I’d unify it and write tests around it.
+
+---
+
+## Q15. Your shortUrl generator is random. What guarantees uniqueness?
+
+**Strong answer:**  
+Random alone doesn’t guarantee uniqueness. Proper approach: add a unique constraint on short_url and retry generation on conflict; or use deterministic encoding of a unique ID (base62 of DB id / Snowflake).
+
+---
+
+# Quick “best answers” to memorize (30 seconds each)
+
+- Why ClickEvent table? To build time-series analytics; clickCount alone can’t show trends.  
+- Why JWT? Stateless auth, easy scaling, works for API clients.  
+- Main risks? token in localStorage (XSS), short code collisions, DB load on redirect, clickEvent table growth.  
+- First improvements? unique index + collision retry, unify /s/ vs /, add redis cache + async click ingestion, better error handling + token expiry handling.
