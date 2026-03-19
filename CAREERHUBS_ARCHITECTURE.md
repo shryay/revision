@@ -1337,3 +1337,481 @@ graph TD
 ### "How do microservices communicate?"
 
 > Services communicate through the **API Gateway** (synchronous REST). There's no direct service-to-service calls - the frontend sends all requests to the gateway which routes them via Eureka discovery. The JWT token flows through from client to gateway to service, maintaining the user context. Services are **loosely coupled** - they share the JWT secret but have independent databases (separate tables in the same MySQL instance).
+
+---
+
+# Architecture (HLD) Cross-Questions
+
+## Q: Give me the 60-second architecture pitch.
+
+**A:** It’s a React SPA (Vite + Tailwind) hosted on Vercel. All API calls go to a Spring Cloud API Gateway which routes requests to multiple Spring Boot microservices using Eureka service discovery. Auth is JWT-based (access + refresh). Data is stored in MySQL via Spring Data JPA. Resume ATS analysis uses Gemini via a dedicated gen-service, and LaTeX resumes are compiled to PDF server-side using pdflatex.
+
+---
+
+## Q: Why microservices here instead of a monolith?
+
+**A:** Logical separation by domain (users, resumes, questions, AI). Each service can scale and deploy independently, and the gateway centralizes routing. Trade-off: more ops complexity (discovery, gateway, multiple builds, network calls).
+
+---
+
+## Q: What’s the role of the API Gateway in your system?
+
+**A:** Single entry point for clients, routes requests to services, optionally validates JWT (AuthenticationFilter) and can attach derived context (like userEmail) to downstream requests. It also enables cross-cutting concerns (security, rate limiting, logging) in one place.
+
+---
+
+## Q: What’s the role of Eureka?
+
+**A:** Services register themselves at startup; gateway discovers service instances dynamically. This avoids hardcoding service URLs and supports scaling (multiple instances).
+
+---
+
+## Q: If Eureka is down, what breaks?
+
+**A:** New service registrations and service discovery. If the gateway can’t resolve service instances, routing fails. Some setups can cache registry data briefly, but generally it’s a critical dependency.
+
+---
+
+# Authentication & Security Cross-Questions
+
+## Q: Explain your login flow end-to-end.
+
+**A:** Frontend calls POST /api/auth/login (User Service). User Service authenticates via Spring Security, checks verified, then returns access + refresh JWT. Frontend stores tokens (localStorage + cookies in your code). Protected pages use ProtectedRoute which checks Redux auth.user.
+
+---
+
+## Q: What’s inside your JWT? What do you use it for?
+
+**A:** The subject is the user email; expiry is set. Services parse email from the token to identify the caller. The user-service also uses a verification token JWT for email verification links.
+
+---
+
+## Q: Where do you validate JWT?
+
+**A:** At the gateway via AuthenticationFilter (validates token, extracts email, adds userEmail header). Also inside services (e.g., resume-service and question-sheet have an AuthService that parses JWT using the shared secret; user-service uses Spring Security filter JwtAuthenticationFilter).
+
+---
+
+## Q: What’s the difference between access token and refresh token?
+
+**A:** Access token is short-lived for API calls. Refresh token is longer-lived and used to obtain a new access token without re-login. This reduces frequent credential prompts and limits the impact of access token leakage.
+
+---
+
+## Q: How do you refresh tokens in the frontend?
+
+**A:** Redux middleware checks lastRefresh; if more than ~40 minutes, it dispatches a refresh thunk which calls refresh endpoint (as implemented). There’s also a 12-hour localStorage cleanup/refresh attempt.
+
+---
+
+## Q: Where do you store tokens and what’s the risk?
+
+**A:** Stored in localStorage and also set in cookies in authService.js. localStorage is vulnerable to XSS token theft; httpOnly cookies mitigate XSS but need CSRF protections. In an interview, I’d say the safer production approach is httpOnly, Secure cookies + CSRF defenses, or a strict CSP + avoid localStorage.
+
+---
+
+## Q: How do you do authorization (roles)?
+
+**A:** Role is stored on the User entity (USER, ADMIN, SUPER_ADMIN). Endpoints like “get all users” check role. Some services also hardcode admin email checks (e.g., adding resume templates restricted to a specific email).
+
+---
+
+## Q: How do you handle email verification?
+
+**A:** On signup, user is created with verified=false. A verification JWT link is emailed. GET /api/auth/verify?token=... validates token and sets verified=true.
+
+---
+
+## Q: What security concerns exist in the LaTeX compile feature?
+
+**A:** It runs pdflatex on user-supplied code, which can be abused (resource exhaustion, potential command/file access depending on TeX config). Mitigations: run in a locked-down container/sandbox, disable shell-escape, apply timeouts, memory limits, restrict file I/O, and queue compilation jobs.
+
+---
+
+# Backend / Microservices Cross-Questions
+
+## Q: Walk me through the User Service layers.
+
+**A:** Controller (AuthController, UserController) → Service (AuthService, UserService) → Repository (UserRepository) → Entity (User). AuthService handles signup/login/verification and issues JWT. UserService handles profile and admin listing logic.
+
+---
+
+## Q: What happens in login if the user isn’t verified?
+
+**A:** Login rejects and triggers a resend verification email, asking user to verify first.
+
+---
+
+## Q: How does the resume template system work?
+
+**A:** resumes table stores global templates. When a user chooses a template, it’s copied into userResume (user-specific record) with custom_code. Updates modify custom_code for that user.
+
+---
+
+## Q: How do you ensure users only see their own saved resumes?
+
+**A:** Resume-service extracts the email from JWT and queries userResume by userId=email. The service uses the token claim as the identity boundary.
+
+---
+
+## Q: How does DSA progress tracking work?
+
+**A:** Questions are in Question. Per-user state is in UserQuestionStatus keyed by (userId, qsnId). On GET, backend merges all questions with the user’s statuses to produce a response containing done/favorite.
+
+---
+
+## Q: Do you have transactions or consistency concerns?
+
+**A:** Mostly simple single-row operations. Consistency is per service database operations. Cross-service consistency is not transactional; it relies on JWT identity and each service’s local data.
+
+---
+
+# Database / Data Modeling Cross-Questions
+
+## Q: What are your main tables and relationships?
+
+**A:** User, Question, UserQuestionStatus, resumes, userResume. Relationships are conceptual; not strict foreign keys everywhere (user is referenced by email string in other tables), which simplifies coupling but reduces referential integrity.
+
+---
+
+## Q: Why store userId as email instead of user numeric ID?
+
+**A:** It avoids cross-service dependency on the user-service DB schema. Trade-off: email changes become painful and there’s no DB-level FK integrity.
+
+---
+
+## Q: What indexes would you add for performance?
+
+**A:** On User.email (already unique). On UserQuestionStatus(userId, qsnId) composite index for fast lookups and upserts. On userResume(userId, resumeId) for saved resume operations.
+
+---
+
+# API Gateway & Routing Cross-Questions
+
+## Q: How does the gateway decide where to send /api/question?
+
+**A:** Via gateway route configuration (not present as a YAML file in this repo snapshot, but implied by the service names and endpoint patterns). In a typical setup, path predicates map to service IDs registered in Eureka.
+
+---
+
+## Q: Why validate JWT at gateway if services also validate?
+
+**A:** Gateway validation provides early rejection and standard behavior. Service validation is defense-in-depth and allows services to be called internally (or if gateway rules are permissive). In a mature system, you’d define clear responsibility (gateway as policy enforcement point) and avoid duplication.
+
+---
+
+## Q: What’s the purpose of adding userEmail header?
+
+**A:** Convenience for downstream services so they can read the derived identity without re-parsing JWT. But it’s only safe if downstream trusts the gateway and/or strips client-sent userEmail headers.
+
+---
+
+# Frontend Cross-Questions (React)
+
+## Q: How is routing structured?
+
+**A:** App.jsx defines public + protected routes using React Router. ProtectedRoute checks Redux auth state and redirects to /login.
+
+---
+
+## Q: How does the frontend talk to backend locally vs production?
+
+**A:** Vite dev server proxies /api to VITE_BACKEND_API. In production, Vercel rewrites to serve SPA and backend is reached via configured domain/proxy.
+
+---
+
+## Q: Where is auth state stored and why Redux?
+
+**A:** In Redux authSlice so it’s global and accessible by components like navbar/protected route. Redux thunks handle async login/register/logout.
+
+---
+
+## Q: Why use SWR on DSA page?
+
+**A:** Efficient caching and revalidation control. It simplifies data fetching, and the UI can optimistically update without full reload.
+
+---
+
+## Q: How do you handle 401 on frontend?
+
+**A:** In fetchers, if response is 401, tokens are cleared and user is redirected to /login with a toast message.
+
+---
+
+# AI / Gemini Cross-Questions
+
+## Q: Why a separate gen-service instead of calling Gemini from frontend directly?
+
+**A:** Keeps the Gemini API key off the client, centralizes prompt shaping, logging, rate limiting, and allows swapping models/providers without redeploying frontend.
+
+---
+
+## Q: How do you ensure Gemini returns valid JSON for ATS analysis?
+
+**A:** Prompt enforces “return ONLY valid JSON”. In real systems, you still need robust parsing + schema validation + retry with correction prompts.
+
+---
+
+# Docker / Deployment Cross-Questions
+
+## Q: Explain your Docker Compose stack.
+
+**A:** MySQL + Eureka + gateway + microservices on one Docker bridge network. MySQL has a healthcheck; Eureka depends on MySQL healthy; others depend on Eureka.
+
+---
+
+## Q: How would you run this locally end-to-end?
+
+**A:** Build Java services with Maven, run docker-compose for backend infra/services, run npm run dev in client for frontend with proxy to gateway.
+
+---
+
+# Scaling / Reliability / System Design Cross-Questions
+
+## Q: What becomes the bottleneck first?
+
+**A:** Likely gateway throughput, MySQL load, and pdflatex compilation CPU/IO. Gemini calls also add latency and cost.
+
+---
+
+## Q: How would you scale LaTeX compilation safely?
+
+**A:** Move compilation to a job queue (RabbitMQ/Kafka/SQS), run worker pool with strict CPU/memory/time limits in isolated containers, return job status + downloadable PDF when ready.
+
+---
+
+## Q: How would you make DSA page faster for large question sets?
+
+**A:** Pagination and filtering, cache question list, store user status separately and fetch only deltas, add indexes, and avoid merging large lists on every request (or do it server-side with optimized queries).
+
+---
+
+## Q: How would you handle secret rotation for JWT?
+
+**A:** Use JWKS/public-private signing (RS256) or maintain multiple secrets during rotation window; update gateway and all services in coordinated rollout.
+
+---
+
+# “Catch Inconsistencies” (Senior Interviewer Style)
+
+## Q: I see frontend hitting endpoints like /api/careerhub/questions/... but your Java services expose /api/question. Explain.
+
+**A:** That indicates there’s likely an additional backend layer or gateway rewrite rules not included here (or endpoints changed over time). In a real interview explanation, I’d say: “The frontend uses /api/... paths and the gateway maps them to the appropriate microservice routes; exact path mapping lives in gateway route config.”
+
+---
+
+## Q: Your question-sheet AuthService.extractRoleFromToken returns "ADMIN" always. Is that correct?
+
+**A:** As coded, it’s a placeholder/bug—role isn’t actually extracted. A correct implementation should either include role as a JWT claim (issued by user-service) and validate it, or call user-service for role, or maintain role locally.
+
+---
+
+## Q: What’s your plan if someone sends huge LaTeX code repeatedly (DoS)?
+
+**A:** Add gateway rate limiting + request size limits, compile timeouts (already partially there), isolate compile workers, require auth, and implement quotas per user.
+
+---
+
+# Rapid-Fire (Short but Correct Answers)
+
+## Q: Why BCrypt?
+
+**A:** Adaptive hashing that’s slow by design; mitigates brute force if DB leaks.
+
+---
+
+## Q: Why stateless auth?
+
+**A:** Easier horizontal scaling; no session store required.
+
+---
+
+## Q: What is eventual consistency here?
+
+**A:** Across services there’s no distributed transaction; data can diverge temporarily (or permanently if bugs), so designs should be resilient.
+
+---
+
+## Q: What’s one improvement you’d do first?
+
+**A:** Fix role extraction/authorization correctness across services and unify API contracts (endpoint paths) with an explicit gateway routing configuration.
+
+---
+
+# Mock Interview Script (15–20 Minutes) — CareerHubs End-to-End
+
+## 0) Warm-up (1 min)
+
+### Q1. What is CareerHubs and what problem does it solve?
+
+**Strong answer:** CareerHubs is a career-prep platform: resume builder (LaTeX + form), resume ATS analysis using Gemini, DSA sheet with tracking, tutorials/resources/roadmaps, and interview prep links. Frontend is a React SPA; backend is microservices behind an API gateway with Eureka discovery and MySQL.
+
+**Follow-ups:**
+- What are your top 2 user journeys?
+
+---
+
+## 1) HLD / Architecture Pitch (2–3 min)
+
+### Q2. Give me the architecture in 60 seconds.
+
+**Strong answer:** React SPA on Vercel. All /api/* calls go to Spring Cloud Gateway. Gateway routes to multiple Spring Boot microservices registered in Eureka. Auth is JWT-based; user-service issues tokens, other services validate with shared secret. MySQL stores user/question/resume data. Gen-service calls Gemini API for ATS analysis. Resume-service compiles LaTeX using pdflatex.
+
+**Follow-ups (senior):**
+- Why do you need Eureka if you already have Docker networking?
+- What would break if gateway is down?
+
+---
+
+## 2) Frontend Deep Dive (3–4 min)
+
+### Q3. How is routing and access control done in the frontend?
+
+**Strong answer:** Routes are defined in App.jsx using React Router. Protected pages are wrapped with ProtectedRoute, which checks Redux auth.user; if missing, it redirects to /login.
+
+**Follow-ups:**
+- Where is auth.user set and persisted?
+- What happens on refresh (page reload)?
+
+---
+
+### Q4. How does the frontend talk to backend in dev vs production?
+
+**Strong answer:** In dev, Vite proxies /api to VITE_BACKEND_API. In production, Vercel rewrites to serve SPA and backend is accessed via configured proxy/domain.
+
+**Follow-ups:**
+- What’s CORS strategy here?
+
+---
+
+### Q5. Why both Axios and fetch + SWR? Any risk?
+
+**Strong answer:** Axios is used in some pages; SWR with fetch is used for cached data (DSA). Risk is inconsistent error handling/auth header injection. Better is one shared API client with interceptors and consistent 401 handling.
+
+---
+
+## 3) Auth End-to-End (4–5 min)
+
+### Q6. Walk me through signup + email verification.
+
+**Strong answer:** User posts signup to user-service. Password is BCrypt-hashed, user saved with verified=false. Service generates a verification JWT and emails a link. When user hits verify endpoint with token, server validates token and flips verified=true.
+
+**Follow-ups:**
+- What prevents someone from verifying another user?
+- What’s in the verification token and expiry?
+
+---
+
+### Q7. Walk me through login and token lifecycle.
+
+**Strong answer:** Login validates credentials; if verified, service returns access + refresh JWT. Frontend stores tokens (localStorage + cookies in current code). Middleware refreshes access token periodically using refresh token.
+
+**Follow-ups (senior):**
+- Why is localStorage risky? What’s safer?
+- If tokens are in cookies, how do you prevent CSRF?
+- How do you revoke tokens early?
+
+---
+
+### Q8. Where is JWT validated—gateway or service?
+
+**Strong answer:** Gateway validates in AuthenticationFilter and can attach userEmail. Services also validate JWT (defense-in-depth) by parsing token using shared secret.
+
+**Follow-ups:**
+- If downstream trusts userEmail header, how do you stop header spoofing?
+- Should gateway permit-all routes still validate JWT?
+
+---
+
+## 4) Backend Services and Data Flows (5–6 min)
+
+### Q9. Explain each microservice’s responsibility.
+
+**Strong answer:**
+- user-service: auth, email verification, user profile, role-based admin endpoints  
+- resume-service: global templates, user saved resumes/custom code, LaTeX compile  
+- question-sheet: questions + per-user status/favorite tracking  
+- gen-service: Gemini API proxy for AI features  
+- roadmap-service: roadmap endpoints/health (minimal in code)  
+- eureka-server: service discovery  
+- gateway-server: routing + auth filter  
+
+**Follow-ups:**
+- What is a clean boundary between services? What data do they share?
+
+---
+
+### Q10. Resume Builder (LaTeX) end-to-end flow.
+
+**Strong answer:** User loads templates from resume-service, saves one which creates a userResume copy. In editor, user edits LaTeX in Monaco; code is saved back to userResume and compile endpoint runs pdflatex, returns PDF bytes which frontend previews.
+
+**Follow-ups (senior):**
+- What happens if compile takes 30 seconds?
+- How do you prevent DoS via compile?
+- Is running pdflatex safe? What mitigations?
+
+---
+
+### Q11. DSA sheet tracking end-to-end.
+
+**Strong answer:** Backend returns all questions merged with user-specific status from UserQuestionStatus keyed by (userId=email, qsnId). UI groups by topic and lets users toggle done/favorite; backend upserts the status row.
+
+**Follow-ups:**
+- What indexes do you need?
+- How do you handle large lists (10k questions)?
+
+---
+
+### Q12. ATS analyzer end-to-end.
+
+**Strong answer:** Frontend extracts resume text from PDF and builds a strict JSON-only prompt. It calls gen-service which calls Gemini and returns the response; frontend parses JSON and renders charts + recommendations.
+
+**Follow-ups (senior):**
+- What if Gemini returns invalid JSON?
+- How do you prevent prompt injection (resume content contains instructions)?
+
+---
+
+## 5) Data Modeling + MySQL (2–3 min)
+
+### Q13. Describe the main tables and relationships.
+
+**Strong answer:** User, Question, UserQuestionStatus, resumes (global templates), userResume (user copies). Other services reference user by email string rather than numeric FK—loose coupling, but weaker referential integrity.
+
+**Follow-ups:**
+- What breaks if user changes email?
+- Why not use a userId UUID?
+
+---
+
+## 6) System Design / Scalability (2–3 min)
+
+### Q14. What are the top bottlenecks and how would you scale?
+
+**Strong answer:** Gateway throughput, MySQL as shared dependency, and pdflatex CPU spikes. Scale gateway and services horizontally, add DB read replicas + indexes, cache frequent reads, and move LaTeX compile to async workers with queue + quotas.
+
+**Follow-ups (senior):**
+- How do you handle distributed tracing across gateway + services?
+- What metrics would you alert on?
+
+---
+
+## 7) Senior “Catch” Questions (2–3 min)
+
+### Q15. Frontend calls endpoints like /api/careerhub/questions/... but the Java service exposes /api/question. Explain.
+
+**Strong answer:** The intended design is that gateway rewrites/map paths to services; mismatch suggests API evolved or some routing config isn’t in this repo snapshot. In production, I’d ensure a single source of truth: gateway route config + shared API contract, and update frontend to match.
+
+---
+
+### Q16. In question-sheet, extractRoleFromToken returns ADMIN. Is that correct?
+
+**Strong answer:** That’s a placeholder/bug. Proper fix: include role claim in JWT issued by user-service and validate it, or call user-service for role, or maintain RBAC consistently per service.
+
+---
+
+# How to Practice (Fast)
+
+- Do one run answering without reading notes.  
+- Second run: keep answers to 2–4 sentences each.  
+- Third run: focus on trade-offs + risks + mitigations (that’s what seniors want).
