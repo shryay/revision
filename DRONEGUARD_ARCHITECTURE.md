@@ -528,3 +528,72 @@ Follow-ups: Latency budget? What if a sensor fails? How to update the model in t
 - **Why binary (not multi-class)?** Drone vs no-drone is the critical detection task; drone type classification is a secondary problem.
 - **How to handle new drone types?** Collect new data, fine-tune, evaluate. Transfer learning from existing checkpoints.
 - **Best single modality?** Depends on environment; typically video (highest resolution) but audio is most robust to visual occlusion.
+
+---
+
+# Final “tomorrow-ready” script for DroneGuard (Junior SWE) — what to say + what to draw
+
+## 60–90 sec pitch (memorize)
+
+DroneGuard is a tri-modal drone detection system that classifies Drone vs Background using Audio + Video + RF together. The dataset aligns all three sensors by splitting each 10-second recording into 0.25-second segments. For each segment, I extract MFCC features from audio, take a short sequence of video frames, and take the corresponding RF spectrogram image. Each modality has its own CNN backbone (audio CNN, 3D video/RF CNN), producing features. Then I fuse them using either Late Fusion (concat scalar predictions) or GMU fusion (feature-level gated fusion). GMU learns softmax weights per sample so if one modality is noisy, the model can rely more on the others. We evaluate with accuracy/precision/recall/F1 and confusion matrix; the reported result is ~99.6% accuracy with ~6ms inference per sample.
+
+---
+
+## Whiteboard (draw these 2)
+
+Audio  
+Dataset: 0.25s segments  
+Video  
+RF spectrogram  
+Audio model  
+Video model  
+RF model  
+Fusion: Late or GMU  
+Output: Drone / Background  
+
+---
+
+Audio features  
+Softmax gates w1,w2,w3  
+Video features  
+RF features  
+h = w1*A + w2*V + w3*R  
+Sigmoid -> probability  
+
+---
+
+## Senior cross-questions (rapid) + strong fresher answers (say exactly this)
+
+### Q: How do you synchronize audio/video/RF?
+
+A: I split each recording into fixed 0.25s segments and for the same segment index I load audio with offset+duration, map video frames by FPS, and map RF frames by its sampling rate so all represent the same time window.
+
+---
+
+### Q: Late Fusion vs GMU?
+
+A: Late fusion combines final scalar predictions, so it’s decision-level. GMU is feature-level, learns gating weights with softmax to dynamically weight each modality per sample, so it handles noisy/missing information better.
+
+---
+
+### Q: Why MFCC for audio?
+
+A: MFCC compresses audio into a compact time–frequency representation capturing timbre patterns like rotor signatures, and it’s CNN-friendly.
+
+---
+
+### Q: Why 3D CNN/inflated ResNet for video?
+
+A: It learns spatio-temporal features (motion + appearance) across a short frame sequence, not just per-frame texture.
+
+---
+
+### Q: If one sensor fails in production?
+
+A: Keep dual/unimodal checkpoints and fall back automatically, or train with modality-dropout so the fusion model is robust to missing inputs.
+
+---
+
+### Q: What matters more here: precision or recall?
+
+A: Usually recall—missing a real drone is higher risk than a false alarm, depending on deployment policy
